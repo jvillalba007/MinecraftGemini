@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Minecraft Clone</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #87CEEB; /* Color cielo */
+        }
+
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        #instructions {
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        #inventory-status {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .color-preview {
+            width: 20px;
+            height: 20px;
+            border: 1px solid white;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div id="instructions" id="overlay">
+            <h1>Minecraft Clone</h1>
+            <p>Haz clic para empezar</p>
+            <p>(WASD = Mover, ESPACIO = Saltar, MOUSE = Mirar)</p>
+            <p>(Click Izquierdo = Minar, Click Derecho = Colocar)</p>
+        </div>
+        <div id="crosshair"></div>
+        <div id="inventory-status">
+            <span>Bloque actual:</span>
+            <div id="current-color" class="color-preview" style="background-color: #4CAF50;"></div>
+        </div>
+    </div>
+
+    <!-- PointerLockControls Script -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+
+    <script>
+        // --- CONFIGURACIÓN BÁSICA ---
+        let scene, camera, renderer, controls;
+        let objects = [];
+        let raycaster;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, canJump = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let prevTime = performance.now();
+        
+        // Inventario de color (mantiene el color del último bloque minado)
+        let heldBlockColor = 0x4CAF50; // Verde inicial
+
+        const WORLD_SIZE = 20; // Tamaño del mundo (límites)
+        const BLOCK_SIZE = 1;
+
+        // --- INICIALIZACIÓN ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Cielo azul
+            scene.fog = new THREE.FogExp2(0x87CEEB, 0.05);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = 2; // Altura de los ojos
+
+            // Luces
+            const ambientLight = new THREE.AmbientLight(0xcccccc, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 20, 10);
+            scene.add(directionalLight);
+
+            // Controles de Puntero
+            controls = new THREE.PointerLockControls(camera, document.body);
+
+            const instructions = document.getElementById('instructions');
+            instructions.addEventListener('click', () => {
+                controls.lock();
+            });
+
+            controls.addEventListener('lock', () => {
+                instructions.style.display = 'none';
+            });
+
+            controls.addEventListener('unlock', () => {
+                instructions.style.display = 'block';
+            });
+
+            scene.add(controls.getObject());
+
+            // Raycaster para minar y colocar
+            raycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, 0, -1), 0, 5);
+
+            // Eventos de Teclado
+            const onKeyDown = (event) => {
+                switch (event.code) {
+                    case 'ArrowUp':
+                    case 'KeyW': moveForward = true; break;
+                    case 'ArrowLeft':
+                    case 'KeyA': moveLeft = true; break;
+                    case 'ArrowDown':
+                    case 'KeyS': moveBackward = true; break;
+                    case 'ArrowRight':
+                    case 'KeyD': moveRight = true; break;
+                    case 'Space': if (canJump === true) velocity.y += 6; canJump = false; break;
+                }
+            };
+
+            const onKeyUp = (event) => {
+                switch (event.code) {
+                    case 'ArrowUp':
+                    case 'KeyW': moveForward = false; break;
+                    case 'ArrowLeft':
+                    case 'KeyA': moveLeft = false; break;
+                    case 'ArrowDown':
+                    case 'KeyS': moveBackward = false; break;
+                    case 'ArrowRight':
+                    case 'KeyD': moveRight = false; break;
+                }
+            };
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            // Click para minar/colocar
+            document.addEventListener('mousedown', (event) => {
+                if (!controls.isLocked) return;
+
+                // Actualizar raycaster desde la cámara
+                raycaster.ray.origin.copy(controls.getObject().position);
+                raycaster.ray.direction.set(0, 0, -1).applyQuaternion(camera.quaternion);
+
+                const intersections = raycaster.intersectObjects(objects);
+
+                if (intersections.length > 0) {
+                    const intersect = intersections[0];
+
+                    if (event.button === 0) { // Click Izquierdo: Minar
+                        // Guardar el color del bloque antes de eliminarlo
+                        heldBlockColor = intersect.object.material.color.getHex();
+                        document.getElementById('current-color').style.backgroundColor = `#${intersect.object.material.color.getHexString()}`;
+                        
+                        scene.remove(intersect.object);
+                        objects.splice(objects.indexOf(intersect.object), 1);
+                    } 
+                    else if (event.button === 2) { // Click Derecho: Colocar
+                        // Colocar bloque basado en la normal de la cara impactada
+                        const pos = intersect.point.clone().add(intersect.face.normal.multiplyScalar(0.5));
+                        pos.x = Math.floor(pos.x + 0.5);
+                        pos.y = Math.floor(pos.y + 0.5);
+                        pos.z = Math.floor(pos.z + 0.5);
+                        
+                        createBlock(pos.x, pos.y, pos.z, heldBlockColor);
+                    }
+                }
+            });
+
+            // Evitar menú contextual
+            document.addEventListener('contextmenu', e => e.preventDefault());
+
+            // Crear Mundo
+            generateWorld();
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // --- GENERACIÓN DE MUNDO ---
+        function createBlock(x, y, z, color) {
+            const geometry = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            const material = new THREE.MeshStandardMaterial({ color: color });
+            const block = new THREE.Mesh(geometry, material);
+            block.position.set(x, y, z);
+            scene.add(block);
+            objects.push(block);
+            return block;
+        }
+
+        function generateWorld() {
+            // Suelo (Pasto)
+            const floorColor = 0x4CAF50;
+            const dirtColor = 0x8B4513;
+            
+            for (let x = -WORLD_SIZE; x <= WORLD_SIZE; x++) {
+                for (let z = -WORLD_SIZE; z <= WORLD_SIZE; z++) {
+                    createBlock(x, 0, z, floorColor);
+                    
+                    // Probabilidad de Árbol (2%)
+                    if (Math.random() < 0.02 && Math.abs(x) > 2 && Math.abs(z) > 2) {
+                        createTree(x, 1, z);
+                    }
+                    // Probabilidad de Arbusto (4%)
+                    else if (Math.random() < 0.04) {
+                        createBush(x, 1, z);
+                    }
+                }
+            }
+        }
+
+        function createTree(x, y, z) {
+            const trunkColor = 0x5D4037;
+            const leafColor = 0x2E7D32;
+            const height = 3 + Math.floor(Math.random() * 2);
+
+            // Tronco
+            for (let i = 0; i < height; i++) {
+                createBlock(x, y + i, z, trunkColor);
+            }
+
+            // Hojas
+            for (let ix = -1; ix <= 1; ix++) {
+                for (let iy = 0; iy <= 1; iy++) {
+                    for (let iz = -1; iz <= 1; iz++) {
+                        if (ix === 0 && iz === 0 && iy === 0) continue;
+                        createBlock(x + ix, y + height + iy, z + iz, leafColor);
+                    }
+                }
+            }
+        }
+
+        function createBush(x, y, z) {
+            const colors = [0x1B5E20, 0x388E3C, 0x43A047];
+            createBlock(x, y, z, colors[Math.floor(Math.random() * colors.length)]);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- BUCLE DE ANIMACIÓN ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (controls.isLocked) {
+                const time = performance.now();
+                const delta = (time - prevTime) / 1000;
+
+                // Fricción/Deceleración
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= 9.8 * 2.0 * delta; // Gravedad (masa 1)
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * 400.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 400.0 * delta;
+
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+
+                controls.getObject().position.y += (velocity.y * delta);
+
+                // Colisión con el suelo (y=1.6 es la altura de los ojos sobre el bloque y=0)
+                if (controls.getObject().position.y < 2) {
+                    velocity.y = 0;
+                    controls.getObject().position.y = 2;
+                    canJump = true;
+                }
+
+                // Límites del Mundo
+                const pos = controls.getObject().position;
+                if (pos.x > WORLD_SIZE) pos.x = WORLD_SIZE;
+                if (pos.x < -WORLD_SIZE) pos.x = -WORLD_SIZE;
+                if (pos.z > WORLD_SIZE) pos.z = WORLD_SIZE;
+                if (pos.z < -WORLD_SIZE) pos.z = -WORLD_SIZE;
+
+                prevTime = time;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Iniciar
+        window.onload = () => {
+            init();
+            animate();
+        };
+    </script>
+</body>
+</html>

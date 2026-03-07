@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JS Minecraft - Xbox Controller Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+        #ui-overlay {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+        .control-item { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+        .icon { width: 24px; height: 24px; fill: white; }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+            box-shadow: 0 0 2px black;
+        }
+        #crosshair::before { top: 9px; left: 0; width: 20px; height: 2px; }
+        #crosshair::after { top: 0; left: 9px; width: 2px; height: 20px; }
+        
+        #no-gamepad {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(220, 38, 38, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            z-index: 100;
+        }
+        #inventory {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px;
+            border-radius: 8px;
+            color: white;
+        }
+        .block-preview {
+            width: 40px;
+            height: 40px;
+            border: 2px solid white;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="no-gamepad">
+        <h1 class="text-xl font-bold">⚠️ MANDO NO DETECTADO</h1>
+        <p>Por favor, conecta un mando de Xbox y presiona cualquier botón.</p>
+    </div>
+
+    <div id="crosshair"></div>
+
+    <div id="inventory">
+        <div id="selected-block" class="block-preview" style="background-color: #4ade80;"></div>
+        <div>
+            <p class="text-xs uppercase opacity-70">Inventario</p>
+            <p id="block-name" class="font-bold">Césped</p>
+        </div>
+    </div>
+
+    <div id="ui-overlay">
+        <div class="control-item">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4"/></svg>
+            <span>Stick Izq: Mover</span>
+        </div>
+        <div class="control-item">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>
+            <span>Stick Der: Mirar</span>
+        </div>
+        <div class="control-item">
+            <div class="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-[10px] font-bold">A</div>
+            <span>Saltar</span>
+        </div>
+        <div class="control-item">
+            <div class="px-1 bg-gray-400 rounded text-[10px] font-bold text-black">RT</div>
+            <span>Colocar Bloque</span>
+        </div>
+        <div class="control-item">
+            <div class="px-1 bg-gray-400 rounded text-[10px] font-bold text-black">LT</div>
+            <span>Minar Bloque</span>
+        </div>
+    </div>
+
+    <script>
+        /** * CONSTANTES Y CONFIGURACIÓN
+         */
+        const WORLD_SIZE = 32;
+        const BLOCK_SIZE = 1;
+        const PLAYER_HEIGHT = 1.8;
+        const PLAYER_SPEED = 0.15;
+        const LOOK_SENSITIVITY = 0.05;
+        
+        const BLOCK_TYPES = {
+            GRASS: { color: 0x4ade80, name: 'Césped' },
+            DIRT: { color: 0x78350f, name: 'Tierra' },
+            STONE: { color: 0x71717a, name: 'Piedra' },
+            WOOD: { color: 0x451a03, name: 'Tronco' },
+            LEAF: { color: 0x166534, name: 'Hojas' },
+            SHRUB: { color: 0x84cc16, name: 'Arbusto' }
+        };
+
+        let scene, camera, renderer, raycaster;
+        let blocks = [];
+        let player = {
+            pos: new THREE.Vector3(16, 5, 16),
+            vel: new THREE.Vector3(),
+            onGround: false,
+            rotation: new THREE.Euler(0, 0, 0, 'YXZ'),
+            inventory: BLOCK_TYPES.GRASS
+        };
+
+        let gamepadIndex = null;
+        let lastButtons = {};
+
+        /**
+         * INICIALIZACIÓN
+         */
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+
+            // Luces
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            sunLight.position.set(50, 100, 50);
+            sunLight.castShadow = true;
+            scene.add(sunLight);
+
+            generateWorld();
+            
+            window.addEventListener('gamepadconnected', (e) => {
+                console.log("Mando conectado:", e.gamepad.id);
+                gamepadIndex = e.gamepad.index;
+                document.getElementById('no-gamepad').style.display = 'none';
+            });
+
+            window.addEventListener('gamepaddisconnected', () => {
+                gamepadIndex = null;
+                document.getElementById('no-gamepad').style.display = 'block';
+            });
+
+            animate();
+        }
+
+        function generateWorld() {
+            // Suelo base
+            for (let x = 0; x < WORLD_SIZE; x++) {
+                for (let z = 0; z < WORLD_SIZE; z++) {
+                    createBlock(x, 0, z, BLOCK_TYPES.STONE);
+                    createBlock(x, 1, z, BLOCK_TYPES.DIRT);
+                    createBlock(x, 2, z, BLOCK_TYPES.GRASS);
+
+                    // Árboles aleatorios
+                    if (x > 2 && x < WORLD_SIZE - 2 && z > 2 && z < WORLD_SIZE - 2) {
+                        if (Math.random() < 0.02) {
+                            createTree(x, 3, z);
+                        } else if (Math.random() < 0.03) {
+                            createBlock(x, 3, z, BLOCK_TYPES.SHRUB);
+                        }
+                    }
+                }
+            }
+
+            // Muros invisibles (límites)
+            const boundaryGeo = new THREE.BoxGeometry(WORLD_SIZE, 20, 1);
+            const boundaryMat = new THREE.MeshBasicMaterial({ visible: false });
+            
+            const wallN = new THREE.Mesh(boundaryGeo, boundaryMat);
+            wallN.position.set(WORLD_SIZE/2, 10, -1);
+            scene.add(wallN); blocks.push(wallN);
+
+            const wallS = new THREE.Mesh(boundaryGeo, boundaryMat);
+            wallS.position.set(WORLD_SIZE/2, 10, WORLD_SIZE);
+            scene.add(wallS); blocks.push(wallS);
+
+            const wallE = new THREE.Mesh(new THREE.BoxGeometry(1, 20, WORLD_SIZE), boundaryMat);
+            wallE.position.set(WORLD_SIZE, 10, WORLD_SIZE/2);
+            scene.add(wallE); blocks.push(wallE);
+
+            const wallW = new THREE.Mesh(new THREE.BoxGeometry(1, 20, WORLD_SIZE), boundaryMat);
+            wallW.position.set(-1, 10, WORLD_SIZE/2);
+            scene.add(wallW); blocks.push(wallW);
+        }
+
+        function createBlock(x, y, z, type) {
+            const geo = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            const mat = new THREE.MeshLambertMaterial({ color: type.color });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, y, z);
+            mesh.userData.type = type;
+            scene.add(mesh);
+            blocks.push(mesh);
+            return mesh;
+        }
+
+        function createTree(x, y, z) {
+            const height = 3 + Math.floor(Math.random() * 2);
+            for (let i = 0; i < height; i++) {
+                createBlock(x, y + i, z, BLOCK_TYPES.WOOD);
+            }
+            // Hojas
+            for (let ox = -1; ox <= 1; ox++) {
+                for (let oz = -1; oz <= 1; oz++) {
+                    for (let oy = 0; oy <= 1; oy++) {
+                        if (ox === 0 && oz === 0 && oy === 0) continue;
+                        createBlock(x + ox, y + height - 1 + oy, z + oz, BLOCK_TYPES.LEAF);
+                    }
+                }
+            }
+            createBlock(x, y + height + 1, z, BLOCK_TYPES.LEAF);
+        }
+
+        /**
+         * FÍSICA Y COLISIONES
+         */
+        function checkCollision(position) {
+            const playerBox = new THREE.Box3().setFromCenterAndSize(
+                position,
+                new THREE.Vector3(0.6, PLAYER_HEIGHT, 0.6)
+            );
+
+            for (let block of blocks) {
+                if (!block.visible) { // Muros invisibles
+                    const wallBox = new THREE.Box3().setFromObject(block);
+                    if (playerBox.intersectsBox(wallBox)) return true;
+                    continue;
+                }
+                const blockBox = new THREE.Box3().setFromObject(block);
+                if (playerBox.intersectsBox(blockBox)) return true;
+            }
+            return false;
+        }
+
+        function updatePhysics() {
+            // Gravedad
+            player.vel.y -= 0.015;
+            
+            // Intento de movimiento vertical
+            let nextPos = player.pos.clone();
+            nextPos.y += player.vel.y;
+            
+            if (checkCollision(nextPos)) {
+                if (player.vel.y < 0) player.onGround = true;
+                player.vel.y = 0;
+            } else {
+                player.pos.y = nextPos.y;
+                player.onGround = false;
+            }
+
+            // Límites inferiores
+            if (player.pos.y < -10) {
+                player.pos.set(16, 10, 16);
+                player.vel.set(0, 0, 0);
+            }
+        }
+
+        /**
+         * INPUT DE GAMEPAD
+         */
+        function handleGamepad() {
+            if (gamepadIndex === null) return;
+            const gp = navigator.getGamepads()[gamepadIndex];
+            if (!gp) return;
+
+            // Sticks
+            const moveX = Math.abs(gp.axes[0]) > 0.1 ? gp.axes[0] : 0;
+            const moveZ = Math.abs(gp.axes[1]) > 0.1 ? gp.axes[1] : 0;
+            const lookX = Math.abs(gp.axes[2]) > 0.1 ? gp.axes[2] : 0;
+            const lookY = Math.abs(gp.axes[3]) > 0.1 ? gp.axes[3] : 0;
+
+            // Rotación Cámara (Stick Derecho)
+            player.rotation.y -= lookX * LOOK_SENSITIVITY;
+            player.rotation.x -= lookY * LOOK_SENSITIVITY;
+            player.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, player.rotation.x));
+            
+            camera.rotation.copy(player.rotation);
+
+            // Movimiento (Stick Izquierdo)
+            if (moveX !== 0 || moveZ !== 0) {
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, player.rotation.y, 0)));
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, player.rotation.y, 0)));
+                
+                let direction = new THREE.Vector3()
+                    .addScaledVector(forward, -moveZ)
+                    .addScaledVector(right, moveX)
+                    .normalize()
+                    .multiplyScalar(PLAYER_SPEED);
+
+                let nextX = player.pos.clone().add(new THREE.Vector3(direction.x, 0, 0));
+                if (!checkCollision(nextX)) player.pos.x = nextX.x;
+
+                let nextZ = player.pos.clone().add(new THREE.Vector3(0, 0, direction.z));
+                if (!checkCollision(nextZ)) player.pos.z = nextZ.z;
+            }
+
+            // Botón A (Saltar)
+            if (gp.buttons[0].pressed && player.onGround) {
+                player.vel.y = 0.25;
+                player.onGround = false;
+            }
+
+            // RT (Gatillo Derecho) - Colocar
+            if (gp.buttons[7].pressed && !lastButtons[7]) {
+                interact(true);
+            }
+
+            // LT (Gatillo Izquierdo) - Minar
+            if (gp.buttons[6].pressed && !lastButtons[6]) {
+                interact(false);
+            }
+
+            // Guardar estado para detectar "clicks"
+            lastButtons[6] = gp.buttons[6].pressed;
+            lastButtons[7] = gp.buttons[7].pressed;
+
+            camera.position.copy(player.pos).add(new THREE.Vector3(0, PLAYER_HEIGHT/2, 0));
+        }
+
+        function interact(isPlacing) {
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(blocks);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                if (intersect.distance < 5) {
+                    if (isPlacing) {
+                        // Colocar bloque en la normal de la cara
+                        const pos = intersect.object.position.clone().add(intersect.face.normal);
+                        // No colocar si el jugador está ahí
+                        const newBlockBox = new THREE.Box3().setFromCenterAndSize(pos, new THREE.Vector3(0.9, 0.9, 0.9));
+                        const playerBox = new THREE.Box3().setFromCenterAndSize(player.pos, new THREE.Vector3(0.6, PLAYER_HEIGHT, 0.6));
+                        
+                        if (!newBlockBox.intersectsBox(playerBox)) {
+                            createBlock(pos.x, pos.y, pos.z, player.inventory);
+                        }
+                    } else {
+                        // Minar bloque
+                        if (intersect.object.visible) {
+                            // Recordar color/tipo
+                            const minedType = intersect.object.userData.type;
+                            if (minedType) {
+                                player.inventory = minedType;
+                                updateInventoryUI();
+                            }
+                            
+                            scene.remove(intersect.object);
+                            blocks = blocks.filter(b => b !== intersect.object);
+                        }
+                    }
+                }
+            }
+        }
+
+        function updateInventoryUI() {
+            const preview = document.getElementById('selected-block');
+            const name = document.getElementById('block-name');
+            preview.style.backgroundColor = '#' + player.inventory.color.toString(16).padStart(6, '0');
+            name.innerText = player.inventory.name;
+        }
+
+        /**
+         * LOOP PRINCIPAL
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+            handleGamepad();
+            updatePhysics();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>

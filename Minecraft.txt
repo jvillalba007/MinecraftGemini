@@ -1,0 +1,5 @@
+"Diseña una réplica de Minecraft usando Three.js controlada exclusivamente por un Joystick de Xbox. Implementa una interfaz en la esquina con iconos para los controles (Stick L mover personaje, Stick R, A, RT, LT)."
+
+Adicionalmente que haya árboles y arbustos (de un bloque). Al minar y colocar bloques recordar el color del bloque minado. Y colisión con bloques AABB 3D.
+
+Restricción: límites del mapa.
